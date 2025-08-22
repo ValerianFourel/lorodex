@@ -1,4 +1,4 @@
-// components/auth/AuthProvider.tsx
+// components/auth/AuthProvider.tsx - Enhanced logout method
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { AuthContextType, AuthState, LoginCredentials, RegisterCredentials, User } from '../../types/auth';
 import { 
@@ -7,7 +7,8 @@ import {
   attemptAutoLogin, 
   logout as authLogout,
   getAuthToken,
-  getCurrentUser
+  getCurrentUser,
+  removeAuthToken
 } from '../../lib/auth';
 import { initializeDatabase, getDatabaseStats, isUsingWebFallback } from '../../lib/database';
 import { initializeStorage } from '../../lib/storage';
@@ -60,7 +61,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // Debug: Check storage contents
       if (Platform.OS === 'web') {
-        console.log('🌐 WEB STORAGE CHECK:');
+        console.log('WEB STORAGE CHECK:');
         console.log('  - auth_token exists:', !!localStorage.getItem('auth_token'));
         console.log('  - current_user exists:', !!localStorage.getItem('current_user'));
         console.log('  - using web fallback:', isUsingWebFallback());
@@ -69,9 +70,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Debug: Get database stats (if database is working)
       try {
         const stats = await getDatabaseStats();
-        console.log('📊 DATABASE STATS:', stats);
+        console.log('DATABASE STATS:', stats);
       } catch (statsError) {
-        console.log('📊 DATABASE STATS: Failed to get stats:', getErrorMessage(statsError));
+        console.log('DATABASE STATS: Failed to get stats:', getErrorMessage(statsError));
       }
 
       // Add detailed logging for debugging
@@ -113,27 +114,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     try {
       // Ensure storage is ready before login attempt
-      console.log('🔑 LOGIN DEBUG: Initializing storage for login...');
+      console.log('LOGIN DEBUG: Initializing storage for login...');
 
       if (Platform.OS === 'web') {
         try {
           await initializeDatabase();
-          console.log('🔑 LOGIN DEBUG: Database ready for web login');
+          console.log('LOGIN DEBUG: Database ready for web login');
         } catch (dbError) {
-          console.log('🔑 LOGIN DEBUG: Database failed, using storage adapter for login');
+          console.log('LOGIN DEBUG: Database failed, using storage adapter for login');
           await initializeStorage();
         }
       } else {
         await initializeDatabase();
-        console.log('🔑 LOGIN DEBUG: Database ready for mobile login');
+        console.log('LOGIN DEBUG: Database ready for mobile login');
       }
 
-      console.log('🔑 LOGIN DEBUG: Attempting login for:', credentials.email);
+      console.log('LOGIN DEBUG: Attempting login for:', credentials.email);
       const result = await loginUser(credentials);
-      console.log('🔑 LOGIN DEBUG: Login result:', result);
+      console.log('LOGIN DEBUG: Login result:', result);
 
       if (result.success && result.user) {
-        console.log('✅ LOGIN SUCCESS: User authenticated:', {
+        console.log('LOGIN SUCCESS: User authenticated:', {
           id: result.user.id,
           email: result.user.email
         });
@@ -146,12 +147,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         return { success: true };
       } else {
-        console.log('❌ LOGIN FAILED:', result.error);
+        console.log('LOGIN FAILED:', result.error);
         setAuthState(prev => ({ ...prev, isLoading: false }));
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('💥 LOGIN ERROR:', getErrorMessage(error));
+      console.error('LOGIN ERROR:', getErrorMessage(error));
       setAuthState(prev => ({ ...prev, isLoading: false }));
       return { success: false, error: 'Login failed. Please try again.' };
     }
@@ -162,27 +163,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     try {
       // Ensure storage is ready before registration attempt
-      console.log('📝 REGISTRATION DEBUG: Initializing storage for registration...');
+      console.log('REGISTRATION DEBUG: Initializing storage for registration...');
 
       if (Platform.OS === 'web') {
         try {
           await initializeDatabase();
-          console.log('📝 REGISTRATION DEBUG: Database ready for web registration');
+          console.log('REGISTRATION DEBUG: Database ready for web registration');
         } catch (dbError) {
-          console.log('📝 REGISTRATION DEBUG: Database failed, using storage adapter for registration');
+          console.log('REGISTRATION DEBUG: Database failed, using storage adapter for registration');
           await initializeStorage();
         }
       } else {
         await initializeDatabase();
-        console.log('📝 REGISTRATION DEBUG: Database ready for mobile registration');
+        console.log('REGISTRATION DEBUG: Database ready for mobile registration');
       }
 
-      console.log('📝 REGISTRATION DEBUG: Starting registration for:', credentials.email);
+      console.log('REGISTRATION DEBUG: Starting registration for:', credentials.email);
       const result = await registerUser(credentials);
-      console.log('📝 REGISTRATION DEBUG: Registration result:', result);
+      console.log('REGISTRATION DEBUG: Registration result:', result);
 
       if (result.success && result.user) {
-        console.log('✅ REGISTRATION SUCCESS: User created and authenticated:', {
+        console.log('REGISTRATION SUCCESS: User created and authenticated:', {
           id: result.user.id,
           email: result.user.email,
           firstName: result.user.firstName,
@@ -195,11 +196,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           try {
             const storedToken = await getAuthToken();
             const storedUser = await getCurrentUser();
-            console.log('💾 STORAGE DEBUG: Token saved:', !!storedToken);
-            console.log('💾 STORAGE DEBUG: User saved:', !!storedUser);
+            console.log('STORAGE DEBUG: Token saved:', !!storedToken);
+            console.log('STORAGE DEBUG: User saved:', !!storedUser);
 
             if (Platform.OS === 'web') {
-              console.log('🌐 WEB STORAGE DEBUG:');
+              console.log('WEB STORAGE DEBUG:');
               console.log('  - auth_token:', !!localStorage.getItem('auth_token'));
               console.log('  - current_user:', !!localStorage.getItem('current_user'));
               console.log('  - using web fallback:', isUsingWebFallback());
@@ -208,9 +209,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             // Check database stats (if available)
             try {
               const stats = await getDatabaseStats();
-              console.log('📊 POST-REGISTRATION DATABASE STATS:', stats);
+              console.log('POST-REGISTRATION DATABASE STATS:', stats);
             } catch (statsError) {
-              console.log('📊 POST-REGISTRATION: Stats unavailable:', getErrorMessage(statsError));
+              console.log('POST-REGISTRATION: Stats unavailable:', getErrorMessage(statsError));
             }
           } catch (debugError) {
             console.error('Debug info gathering failed:', getErrorMessage(debugError));
@@ -226,38 +227,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         return { success: true };
       } else {
-        console.log('❌ REGISTRATION FAILED:', result.error);
+        console.log('REGISTRATION FAILED:', result.error);
         setAuthState(prev => ({ ...prev, isLoading: false }));
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('💥 REGISTRATION ERROR:', getErrorMessage(error));
+      console.error('REGISTRATION ERROR:', getErrorMessage(error));
       setAuthState(prev => ({ ...prev, isLoading: false }));
       return { success: false, error: 'Registration failed. Please try again.' };
     }
   };
 
   const logout = async (): Promise<void> => {
+    console.log('LOGOUT DEBUG: Starting logout process...');
     setAuthState(prev => ({ ...prev, isLoading: true }));
 
     try {
-      console.log('🚪 LOGOUT DEBUG: Starting logout process...');
+      // Clear all auth data from storage
+      console.log('LOGOUT DEBUG: Clearing auth tokens...');
+      await removeAuthToken(); // This clears both token and user data
+      
+      // Also call the auth logout function for any additional cleanup
       await authLogout();
 
-      console.log('✅ LOGOUT SUCCESS: User logged out');
+      // Verify cleanup worked
+      if (Platform.OS === 'web') {
+        console.log('LOGOUT DEBUG: Verifying web storage cleared...');
+        console.log('  - auth_token exists:', !!localStorage.getItem('auth_token'));
+        console.log('  - current_user exists:', !!localStorage.getItem('current_user'));
+      }
+
+      console.log('LOGOUT SUCCESS: All auth data cleared');
+      
+      // Update auth state to logged out
       setAuthState({
         user: null,
         isLoading: false,
         isAuthenticated: false,
       });
+
     } catch (error) {
-      console.error('💥 LOGOUT ERROR:', getErrorMessage(error));
+      console.error('LOGOUT ERROR:', getErrorMessage(error));
       // Still logout on error to avoid stuck state
       setAuthState({
         user: null,
         isLoading: false,
         isAuthenticated: false,
       });
+      
+      // Force clear storage even if there was an error
+      try {
+        await removeAuthToken();
+        if (Platform.OS === 'web') {
+          localStorage.removeItem('auth_token');
+          localStorage.removeItem('current_user');
+        }
+      } catch (clearError) {
+        console.error('Force clear storage error:', getErrorMessage(clearError));
+      }
     }
   };
 
