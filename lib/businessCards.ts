@@ -156,3 +156,19 @@ export class BusinessCardService {
     };
   }
 }
+
+// Export individual functions for easier use in components
+export const createBusinessCard = (userId: string, cardData: CreateBusinessCardDTO): Promise<BusinessCard> =>
+  BusinessCardService.create(userId, cardData);
+
+export const getUserBusinessCards = (userId: string): Promise<BusinessCard[]> =>
+  BusinessCardService.getByUserId(userId);
+
+export const getBusinessCardById = (id: string): Promise<BusinessCard | null> =>
+  BusinessCardService.getById(id);
+
+export const updateBusinessCard = (id: string, userId: string, updates: UpdateBusinessCardDTO): Promise<BusinessCard> =>
+  BusinessCardService.update(id, userId, updates);
+
+export const deleteBusinessCard = (id: string, userId: string): Promise<void> =>
+  BusinessCardService.delete(id, userId);

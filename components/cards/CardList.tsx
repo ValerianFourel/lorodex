@@ -50,6 +50,7 @@ export function CardList({ cards, onEdit, onDelete, isLoading }: CardListProps) 
         />
       )}
       contentContainerStyle={styles.container}
+      showsVerticalScrollIndicator={false}
     />
   );
 }
@@ -57,12 +58,14 @@ export function CardList({ cards, onEdit, onDelete, isLoading }: CardListProps) 
 const styles = StyleSheet.create({
   container: {
     padding: 16,
+    flexGrow: 1, // Allow container to grow for empty state
   },
   emptyState: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 40,
+    minHeight: 300, // Ensure minimum height for empty state
   },
   emptyTitle: {
     fontSize: 18,

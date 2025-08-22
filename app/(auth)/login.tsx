@@ -1,7 +1,7 @@
 // app/(auth)/login.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Alert, KeyboardAvoidingView, Platform } from 'react-native';
-import { Link } from 'expo-router';
+import { Link, router } from 'expo-router';
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
 import { useAuth } from '../../components/auth/AuthProvider';
@@ -20,6 +20,14 @@ export default function LoginScreen() {
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const { login, authState } = useAuth();
+
+  // Redirect to app if user becomes authenticated
+  useEffect(() => {
+    if (authState.isAuthenticated && !authState.isLoading) {
+      console.log('✅ LOGIN SUCCESS: Redirecting to app...');
+      router.replace('/(tabs)');
+    }
+  }, [authState.isAuthenticated, authState.isLoading]);
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
@@ -47,17 +55,22 @@ export default function LoginScreen() {
     }
 
     try {
+      console.log('🔑 LOGIN: Attempting login for:', formData.email);
+      
       const result = await login({
         email: formData.email.trim().toLowerCase(),
         password: formData.password
       });
 
       if (!result.success) {
+        console.log('❌ LOGIN FAILED:', result.error);
         Alert.alert('Login Failed', result.error || 'Invalid credentials');
+      } else {
+        console.log('✅ LOGIN SUCCESS: Credentials validated');
+        // Navigation will be handled by useEffect when authState updates
       }
-      // On success, the AuthProvider will handle navigation automatically
     } catch (error) {
-      console.error('Login error:', error);
+      console.error('💥 LOGIN ERROR:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
   };
@@ -69,6 +82,15 @@ export default function LoginScreen() {
       setErrors(prev => ({ ...prev, [field]: '' }));
     }
   };
+
+  // Don't render login form if user is already authenticated
+  if (authState.isAuthenticated && !authState.isLoading) {
+    return (
+      <View style={[styles.container, styles.centerContent]}>
+        <Text style={styles.loadingText}>Redirecting to app...</Text>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView 
@@ -128,6 +150,10 @@ const styles = StyleSheet.create({
     padding: 24,
     justifyContent: 'center',
   },
+  centerContent: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   title: {
     fontSize: 32,
     fontWeight: 'bold',
@@ -163,5 +189,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#007AFF',
     fontWeight: '600',
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#666',
   },
 });
