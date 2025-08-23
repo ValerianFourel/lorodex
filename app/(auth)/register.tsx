@@ -1,5 +1,5 @@
-// app/(auth)/register.tsx
-import React, { useState } from 'react';
+// app/(auth)/register.tsx - Updated with proper success handling
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Alert, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Link, router } from 'expo-router';
 import { Input } from '../../components/ui/Input';
@@ -17,6 +17,14 @@ export default function RegisterScreen() {
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const { register, authState } = useAuth();
+
+  // Navigate to main app when user becomes authenticated
+  useEffect(() => {
+    if (authState.isAuthenticated && authState.user) {
+      console.log('✅ RegisterScreen: User authenticated, navigating to main app');
+      router.replace('/(tabs)');
+    }
+  }, [authState.isAuthenticated, authState.user]);
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
@@ -50,13 +58,16 @@ export default function RegisterScreen() {
   };
 
   const handleRegister = async () => {
+    console.log('📝 RegisterScreen: Starting registration process...');
+
     // First, validate the form
     if (!validateForm()) {
-      return; // Stop if validation fails (errors are already set)
+      console.log('❌ RegisterScreen: Form validation failed');
+      return;
     }
 
     try {
-      // Use formData properties instead of undefined variables
+      console.log('📝 RegisterScreen: Calling register function...');
       const result = await register({
         firstName: formData.firstName.trim(),
         lastName: formData.lastName.trim(),
@@ -64,12 +75,19 @@ export default function RegisterScreen() {
         password: formData.password
       });
 
+      console.log('📝 RegisterScreen: Register result:', result);
+
       if (!result.success) {
+        console.log('❌ RegisterScreen: Registration failed:', result.error);
         Alert.alert('Registration Failed', result.error || 'Registration failed');
+        return;
       }
-      // On success, the AuthProvider will handle navigation automatically
+
+      console.log('✅ RegisterScreen: Registration successful');
+      // Navigation will be handled by useEffect when authState changes
+
     } catch (error) {
-      console.error('Registration error:', error);
+      console.error('❌ RegisterScreen: Registration error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
   };
