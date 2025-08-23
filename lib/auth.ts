@@ -5,6 +5,13 @@ import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as crypto from 'expo-crypto';
 import jwt from 'jsonwebtoken';
+import { 
+  createUser, 
+  getUserWithPassword, 
+  updateUserLastLogin,
+  createUserSession,
+  getUserSession
+} from './database-adapter'; // Changed from database-production
 
 // Configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
