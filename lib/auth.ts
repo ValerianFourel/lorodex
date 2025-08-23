@@ -9,30 +9,32 @@ import jwt from 'jsonwebtoken';
 // Configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 const JWT_EXPIRY = '7d';
-const BCRYPT_ROUNDS = 12;
+const REFRESH_TOKEN_EXPIRY = '30d';
 
 // Session management keys
 const AUTH_TOKEN_KEY = 'auth_token';
 const CURRENT_USER_KEY = 'current_user';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 
-// Database row types
+// Database row types matching your schema
 interface UserRow {
   id: string;
   email: string;
   password_hash: string;
   first_name: string;
   last_name: string;
+  last_login: string | null;
   created_at: string;
   updated_at: string;
-  last_login?: string;
 }
 
 interface SessionRow {
   id: string;
   user_id: string;
   session_token: string;
-  device_info: string;
+  device_info: string | null;
+  ip_address: string | null;
+  user_agent: string | null;
   is_active: boolean;
   expires_at: string;
   created_at: string;
@@ -68,21 +70,30 @@ const webSecureStorage = {
 
 // Secure password hashing using expo-crypto
 async function hashPassword(password: string): Promise<string> {
-  if (Platform.OS === 'web') {
-    // For web, use a simple hash with salt (in production, implement proper bcrypt)
-    const salt = await crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, 'salt_' + password);
-    return await crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, password + salt);
-  } else {
-    // For mobile, use crypto digest
-    const salt = await crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, 'static_salt_' + Date.now());
-    return await crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, password + salt.substring(0, 16));
-  }
+  const salt = await crypto.digestStringAsync(
+    crypto.CryptoDigestAlgorithm.SHA256, 
+    'lorodex_salt_' + Date.now().toString()
+  );
+
+  return await crypto.digestStringAsync(
+    crypto.CryptoDigestAlgorithm.SHA256, 
+    password + salt.substring(0, 16)
+  );
 }
 
-// Verify password against hash
+// Verify password against hash (simplified for demo - use bcrypt in production)
 async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  const hashedInput = await hashPassword(password);
-  return hashedInput === hash;
+  // In production, implement proper bcrypt verification
+  // This is a simplified version for demo purposes
+  try {
+    const testHash = await crypto.digestStringAsync(
+      crypto.CryptoDigestAlgorithm.SHA256,
+      password + hash.substring(hash.length - 16)
+    );
+    return testHash === hash;
+  } catch {
+    return false;
+  }
 }
 
 // Generate secure JWT token
@@ -93,7 +104,7 @@ function generateJWT(userId: string, email: string): string {
     iat: Math.floor(Date.now() / 1000),
     type: 'access'
   };
-  
+
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRY });
 }
 
@@ -104,8 +115,8 @@ function generateRefreshToken(userId: string): string {
     type: 'refresh',
     iat: Math.floor(Date.now() / 1000)
   };
-  
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
+
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRY });
 }
 
 // Validate JWT token
@@ -119,12 +130,11 @@ function validateJWT(token: string): { valid: boolean; payload?: any } {
   }
 }
 
-// Generate secure user ID
-function generateSecureId(): string {
+// Generate secure user ID matching your schema pattern
+function generateSecureId(prefix: string = 'user'): string {
   const timestamp = Date.now().toString();
   const random = Math.random().toString(36).substring(2, 15);
-  const hash = crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, timestamp + random);
-  return `user_${timestamp}_${random}`;
+  return `${prefix}_${timestamp}_${random}`;
 }
 
 // Input validation
@@ -135,27 +145,27 @@ function validateEmail(email: string): boolean {
 
 function validatePassword(password: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
-  
+
   if (password.length < 8) {
     errors.push('Password must be at least 8 characters long');
   }
-  
+
   if (!/[A-Z]/.test(password)) {
     errors.push('Password must contain at least one uppercase letter');
   }
-  
+
   if (!/[a-z]/.test(password)) {
     errors.push('Password must contain at least one lowercase letter');
   }
-  
+
   if (!/[0-9]/.test(password)) {
     errors.push('Password must contain at least one number');
   }
-  
+
   if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
     errors.push('Password must contain at least one special character');
   }
-  
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -179,25 +189,25 @@ function checkRateLimit(email: string): { allowed: boolean; attemptsLeft?: numbe
   const key = email.toLowerCase();
   const now = Date.now();
   const record = rateLimiter.get(key);
-  
+
   if (!record) {
     rateLimiter.set(key, { attempts: 1, lastAttempt: now });
     return { allowed: true, attemptsLeft: MAX_LOGIN_ATTEMPTS - 1 };
   }
-  
+
   // Reset if lockout time has passed
   if (now - record.lastAttempt > LOCKOUT_TIME) {
     rateLimiter.set(key, { attempts: 1, lastAttempt: now });
     return { allowed: true, attemptsLeft: MAX_LOGIN_ATTEMPTS - 1 };
   }
-  
+
   if (record.attempts >= MAX_LOGIN_ATTEMPTS) {
     return { allowed: false };
   }
-  
+
   record.attempts++;
   record.lastAttempt = now;
-  
+
   return { allowed: true, attemptsLeft: MAX_LOGIN_ATTEMPTS - record.attempts };
 }
 
@@ -210,12 +220,12 @@ export async function registerUser(
     if (!validateEmail(credentials.email)) {
       return { success: false, error: 'Invalid email format' };
     }
-    
+
     const passwordValidation = validatePassword(credentials.password);
     if (!passwordValidation.valid) {
       return { success: false, error: 'Password requirements not met', errors: passwordValidation.errors };
     }
-    
+
     if (!credentials.firstName?.trim() || !credentials.lastName?.trim()) {
       return { success: false, error: 'First name and last name are required' };
     }
@@ -232,7 +242,7 @@ export async function registerUser(
       }
 
       // Create new user with secure hash
-      const userId = generateSecureId();
+      const userId = generateSecureId('user');
       const hashedPassword = await hashPassword(credentials.password);
       const now = new Date().toISOString();
 
@@ -265,7 +275,7 @@ export async function registerUser(
       // Generate tokens
       const accessToken = generateJWT(userId, user.email);
       const refreshToken = generateRefreshToken(userId);
-      
+
       // Save tokens and user data
       await saveAuthToken(accessToken);
       await saveRefreshToken(refreshToken);
@@ -274,7 +284,8 @@ export async function registerUser(
       // Save session to database
       await saveUserSession(userId, accessToken, {
         platform: Platform.OS,
-        userAgent: 'LorodexApp/1.0'
+        userAgent: 'LorodexApp/1.0',
+        version: '1.0.0'
       });
 
       console.log('User registered successfully:', { id: userId, email: user.email });
@@ -327,7 +338,7 @@ export async function loginUser(
 
       // Verify password
       const isValidPassword = await verifyPassword(credentials.password, userRow.password_hash);
-      
+
       if (!isValidPassword) {
         return { 
           success: false, 
@@ -350,16 +361,17 @@ export async function loginUser(
       await saveRefreshToken(refreshToken);
       await saveCurrentUser(user);
 
-      // Update last login
+      // Update last login timestamp
       await db.runAsync(
-        'UPDATE users SET last_login = ? WHERE id = ?',
-        [new Date().toISOString(), user.id]
+        'UPDATE users SET last_login = ?, updated_at = ? WHERE id = ?',
+        [new Date().toISOString(), new Date().toISOString(), user.id]
       );
 
       // Save session to database
       await saveUserSession(user.id, accessToken, {
         platform: Platform.OS,
-        userAgent: 'LorodexApp/1.0'
+        userAgent: 'LorodexApp/1.0',
+        version: '1.0.0'
       });
 
       console.log('User logged in successfully:', { id: user.id, email: user.email });
@@ -371,7 +383,7 @@ export async function loginUser(
   }
 }
 
-// Save user session to database
+// Save user session to database matching your schema
 async function saveUserSession(
   userId: string, 
   token: string, 
@@ -379,22 +391,32 @@ async function saveUserSession(
 ): Promise<void> {
   try {
     await withDatabase(async (db) => {
-      const sessionId = generateSecureId().replace('user_', 'session_');
+      const sessionId = generateSecureId('session');
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-      
+      const now = new Date().toISOString();
+
+      // Deactivate old sessions for this user (optional - keep only one active session)
       await db.runAsync(
-        `INSERT OR REPLACE INTO user_sessions 
-         (id, user_id, session_token, device_info, is_active, expires_at, created_at, last_accessed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        'UPDATE user_sessions SET is_active = FALSE WHERE user_id = ? AND is_active = TRUE',
+        [userId]
+      );
+
+      // Insert new session
+      await db.runAsync(
+        `INSERT INTO user_sessions 
+         (id, user_id, session_token, device_info, ip_address, user_agent, is_active, expires_at, created_at, last_accessed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           sessionId,
           userId,
           token,
           JSON.stringify(deviceInfo),
+          null, // IP address - would need to be obtained from request in real app
+          deviceInfo.userAgent || 'LorodexApp/1.0',
           true,
           expiresAt.toISOString(),
-          new Date().toISOString(),
-          new Date().toISOString()
+          now,
+          now
         ]
       );
     });
@@ -404,7 +426,7 @@ async function saveUserSession(
   }
 }
 
-// Validate auth token with JWT
+// Validate auth token with JWT and database session
 export async function validateAuthToken(): Promise<{ valid: boolean; user?: User; expired?: boolean }> {
   try {
     const token = await getAuthToken();
@@ -420,7 +442,42 @@ export async function validateAuthToken(): Promise<{ valid: boolean; user?: User
     }
 
     const { payload } = jwtResult;
-    
+
+    // Check if session is still active in database
+    const isSessionActive = await withDatabase(async (db) => {
+      const session = await db.getFirstAsync(
+        'SELECT is_active, expires_at FROM user_sessions WHERE session_token = ? AND user_id = ?',
+        [token, payload.userId]
+      ) as { is_active: boolean; expires_at: string } | null;
+
+      if (!session || !session.is_active) {
+        return false;
+      }
+
+      // Check if session has expired
+      if (new Date(session.expires_at) < new Date()) {
+        // Mark session as inactive
+        await db.runAsync(
+          'UPDATE user_sessions SET is_active = FALSE WHERE session_token = ?',
+          [token]
+        );
+        return false;
+      }
+
+      // Update last accessed time
+      await db.runAsync(
+        'UPDATE user_sessions SET last_accessed = ? WHERE session_token = ?',
+        [new Date().toISOString(), token]
+      );
+
+      return true;
+    });
+
+    if (!isSessionActive) {
+      await removeAuthToken();
+      return { valid: false, expired: true };
+    }
+
     // Check if user still exists in database
     const user = await getUserById(payload.userId);
     if (!user) {
@@ -459,6 +516,14 @@ export async function refreshAuthToken(): Promise<{ success: boolean; user?: Use
     // Generate new access token
     const newAccessToken = generateJWT(user.id, user.email);
     await saveAuthToken(newAccessToken);
+
+    // Update session with new token
+    await withDatabase(async (db) => {
+      await db.runAsync(
+        'UPDATE user_sessions SET session_token = ?, last_accessed = ? WHERE user_id = ? AND is_active = TRUE',
+        [newAccessToken, new Date().toISOString(), user.id]
+      );
+    });
 
     return { success: true, user };
   } catch (error) {
@@ -555,7 +620,7 @@ export async function logout(): Promise<void> {
       // Invalidate session in database
       await withDatabase(async (db) => {
         await db.runAsync(
-          'UPDATE user_sessions SET is_active = false WHERE session_token = ?',
+          'UPDATE user_sessions SET is_active = FALSE WHERE session_token = ?',
           [token]
         );
       });
@@ -638,7 +703,7 @@ export async function changePassword(
       // Invalidate all existing sessions except current
       const currentToken = await getAuthToken();
       await db.runAsync(
-        'UPDATE user_sessions SET is_active = false WHERE user_id = ? AND session_token != ?',
+        'UPDATE user_sessions SET is_active = FALSE WHERE user_id = ? AND session_token != ?',
         [userId, currentToken || '']
       );
 
@@ -674,5 +739,51 @@ export async function checkUserExists(email: string): Promise<boolean> {
   } catch (error) {
     console.error('Error checking user existence:', error);
     return false;
+  }
+}
+
+// Get active sessions for a user
+export async function getUserSessions(userId: string): Promise<SessionRow[]> {
+  try {
+    return await withDatabase(async (db) => {
+      const sessions = await db.getAllAsync(
+        'SELECT * FROM user_sessions WHERE user_id = ? AND is_active = TRUE ORDER BY last_accessed DESC',
+        [userId]
+      ) as SessionRow[];
+      return sessions;
+    });
+  } catch (error) {
+    console.error('Error fetching user sessions:', error);
+    return [];
+  }
+}
+
+// Revoke a specific session
+export async function revokeSession(sessionId: string, userId: string): Promise<boolean> {
+  try {
+    return await withDatabase(async (db) => {
+      const result = await db.runAsync(
+        'UPDATE user_sessions SET is_active = FALSE WHERE id = ? AND user_id = ?',
+        [sessionId, userId]
+      );
+      return result.changes > 0;
+    });
+  } catch (error) {
+    console.error('Error revoking session:', error);
+    return false;
+  }
+}
+
+// Clean up expired sessions
+export async function cleanupExpiredSessions(): Promise<void> {
+  try {
+    await withDatabase(async (db) => {
+      await db.runAsync(
+        'UPDATE user_sessions SET is_active = FALSE WHERE expires_at < ? AND is_active = TRUE',
+        [new Date().toISOString()]
+      );
+    });
+  } catch (error) {
+    console.error('Error cleaning up expired sessions:', error);
   }
 }

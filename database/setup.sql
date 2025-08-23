@@ -1,17 +1,6 @@
 -- Lorodex Production Database Schema (PostgreSQL)
 
--- Users table
-CREATE TABLE users (
-    id VARCHAR(255) PRIMARY KEY,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    first_name VARCHAR(255) NOT NULL,
-    last_name VARCHAR(255) NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Auto-update `updated_at`
+-- Auto-update `updated_at` function
 CREATE OR REPLACE FUNCTION update_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -19,6 +8,18 @@ BEGIN
    RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Users table
+CREATE TABLE users (
+    id VARCHAR(255) PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    first_name VARCHAR(255) NOT NULL,
+    last_name VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    last_login TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- Business cards table
 CREATE TABLE business_cards (
@@ -31,25 +32,11 @@ CREATE TABLE business_cards (
     website TEXT,
     address TEXT,
     notes TEXT,
+    deleted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
-
--- Add triggers for updated_at
-CREATE TRIGGER set_users_updated_at
-BEFORE UPDATE ON users
-FOR EACH ROW EXECUTE FUNCTION update_timestamp();
-
-CREATE TRIGGER set_business_cards_updated_at
-BEFORE UPDATE ON business_cards
-FOR EACH ROW EXECUTE FUNCTION update_timestamp();
-
--- Indexes
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_created_at ON users(created_at);
-CREATE INDEX idx_business_cards_user_id ON business_cards(user_id);
-CREATE INDEX idx_business_cards_created_at ON business_cards(created_at);
 
 -- User profiles
 CREATE TABLE user_profiles (
@@ -67,10 +54,6 @@ CREATE TABLE user_profiles (
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
-
-CREATE TRIGGER set_user_profiles_updated_at
-BEFORE UPDATE ON user_profiles
-FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
 -- User sessions
 CREATE TABLE user_sessions (
@@ -117,10 +100,6 @@ CREATE TABLE contacts (
     CONSTRAINT unique_user_card UNIQUE (user_id, business_card_id)
 );
 
-CREATE TRIGGER set_contacts_updated_at
-BEFORE UPDATE ON contacts
-FOR EACH ROW EXECUTE FUNCTION update_timestamp();
-
 -- Card exchanges
 CREATE TABLE card_exchanges (
     id VARCHAR(255) PRIMARY KEY,
@@ -138,14 +117,43 @@ CREATE TABLE card_exchanges (
     FOREIGN KEY (business_card_id) REFERENCES business_cards(id) ON DELETE CASCADE
 );
 
--- Indexes for extended tables
+-- Add triggers for updated_at
+CREATE TRIGGER set_users_updated_at
+BEFORE UPDATE ON users
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+CREATE TRIGGER set_business_cards_updated_at
+BEFORE UPDATE ON business_cards
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+CREATE TRIGGER set_user_profiles_updated_at
+BEFORE UPDATE ON user_profiles
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+CREATE TRIGGER set_contacts_updated_at
+BEFORE UPDATE ON contacts
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+-- Indexes for performance
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_created_at ON users(created_at);
+CREATE INDEX idx_users_last_login ON users(last_login);
+
+CREATE INDEX idx_business_cards_user_id ON business_cards(user_id);
+CREATE INDEX idx_business_cards_created_at ON business_cards(created_at);
+CREATE INDEX idx_business_cards_deleted_at ON business_cards(deleted_at);
+
 CREATE INDEX idx_user_profiles_user_id ON user_profiles(user_id);
+
 CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
 CREATE INDEX idx_user_sessions_token ON user_sessions(session_token);
 CREATE INDEX idx_user_sessions_active ON user_sessions(is_active, expires_at);
+
 CREATE INDEX idx_business_card_social_links_card_id ON business_card_social_links(business_card_id);
+
 CREATE INDEX idx_contacts_user_id ON contacts(user_id);
 CREATE INDEX idx_contacts_favorite ON contacts(user_id, is_favorite);
+
 CREATE INDEX idx_card_exchanges_sender ON card_exchanges(sender_id);
 CREATE INDEX idx_card_exchanges_receiver ON card_exchanges(receiver_id);
 CREATE INDEX idx_card_exchanges_date ON card_exchanges(exchanged_at);
@@ -158,29 +166,3 @@ INSERT INTO users (id, email, first_name, last_name, password_hash) VALUES
 INSERT INTO business_cards (id, user_id, title, company, email, phone, website) VALUES
 ('card_1703123456789_xyz123', 'user_1703123456789_abc123', 'John Doe - Developer', 'Tech Corp', 'john.doe@techcorp.com', '+1-555-0123', 'https://johndoe.dev'),
 ('card_1703123456790_xyz456', 'user_1703123456790_def456', 'Jane Smith - Designer', 'Design Studio', 'jane@designstudio.com', '+1-555-0124', 'https://janesmith.design');
-
-
-------- waddding thissss --------------------
-
-
-
--- Add to your existing schema
-ALTER TABLE users ADD COLUMN last_login TIMESTAMP;
-ALTER TABLE users ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
-
--- User sessions table (already in the schema I provided earlier)
-CREATE TABLE user_sessions (
-    id VARCHAR(255) PRIMARY KEY,
-    user_id VARCHAR(255) NOT NULL,
-    session_token VARCHAR(255) UNIQUE NOT NULL,
-    device_info TEXT,
-    is_active BOOLEAN DEFAULT TRUE,
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-
-
-ALTER TABLE business_cards ADD COLUMN deleted_at TIMESTAMP NULL;

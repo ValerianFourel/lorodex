@@ -70,7 +70,7 @@ const loadCards = async () => {
 
       <CardList
         cards={cards}
-        onEdit={handleEdit}
+        onEdit={print} // handleEdit
         onDelete={handleDelete}
         isLoading={isLoading}
       />
