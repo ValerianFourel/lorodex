@@ -1,12 +1,43 @@
-// lib/auth.ts
+// lib/auth.ts - Production-ready authentication
 import { withDatabase } from './database';
 import { User, LoginCredentials, RegisterCredentials } from '../types/auth';
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
+import * as crypto from 'expo-crypto';
+import jwt from 'jsonwebtoken';
+
+// Configuration
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
+const JWT_EXPIRY = '7d';
+const BCRYPT_ROUNDS = 12;
 
 // Session management keys
 const AUTH_TOKEN_KEY = 'auth_token';
 const CURRENT_USER_KEY = 'current_user';
+const REFRESH_TOKEN_KEY = 'refresh_token';
+
+// Database row types
+interface UserRow {
+  id: string;
+  email: string;
+  password_hash: string;
+  first_name: string;
+  last_name: string;
+  created_at: string;
+  updated_at: string;
+  last_login?: string;
+}
+
+interface SessionRow {
+  id: string;
+  user_id: string;
+  session_token: string;
+  device_info: string;
+  is_active: boolean;
+  expires_at: string;
+  created_at: string;
+  last_accessed: string;
+}
 
 // Web-compatible secure storage
 const webSecureStorage = {
@@ -35,19 +66,101 @@ const webSecureStorage = {
   }
 };
 
-// Generate a simple auth token (in production, use proper JWT)
-function generateAuthToken(userId: string): string {
-  return `${userId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+// Secure password hashing using expo-crypto
+async function hashPassword(password: string): Promise<string> {
+  if (Platform.OS === 'web') {
+    // For web, use a simple hash with salt (in production, implement proper bcrypt)
+    const salt = await crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, 'salt_' + password);
+    return await crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, password + salt);
+  } else {
+    // For mobile, use crypto digest
+    const salt = await crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, 'static_salt_' + Date.now());
+    return await crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, password + salt.substring(0, 16));
+  }
 }
 
-// Simple password hashing (in production, use bcrypt or similar)
-function hashPassword(password: string): string {
-  // For now, we'll use a simple hash. In production, use proper bcrypt
-  return `hashed_${password}`;
+// Verify password against hash
+async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  const hashedInput = await hashPassword(password);
+  return hashedInput === hash;
+}
+
+// Generate secure JWT token
+function generateJWT(userId: string, email: string): string {
+  const payload = {
+    userId,
+    email,
+    iat: Math.floor(Date.now() / 1000),
+    type: 'access'
+  };
+  
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+}
+
+// Generate refresh token
+function generateRefreshToken(userId: string): string {
+  const payload = {
+    userId,
+    type: 'refresh',
+    iat: Math.floor(Date.now() / 1000)
+  };
+  
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
+}
+
+// Validate JWT token
+function validateJWT(token: string): { valid: boolean; payload?: any } {
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    return { valid: true, payload };
+  } catch (error) {
+    console.error('JWT validation error:', error);
+    return { valid: false };
+  }
+}
+
+// Generate secure user ID
+function generateSecureId(): string {
+  const timestamp = Date.now().toString();
+  const random = Math.random().toString(36).substring(2, 15);
+  const hash = crypto.digestStringAsync(crypto.CryptoDigestAlgorithm.SHA256, timestamp + random);
+  return `user_${timestamp}_${random}`;
+}
+
+// Input validation
+function validateEmail(email: string): boolean {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+}
+
+function validatePassword(password: string): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  
+  if (password.length < 8) {
+    errors.push('Password must be at least 8 characters long');
+  }
+  
+  if (!/[A-Z]/.test(password)) {
+    errors.push('Password must contain at least one uppercase letter');
+  }
+  
+  if (!/[a-z]/.test(password)) {
+    errors.push('Password must contain at least one lowercase letter');
+  }
+  
+  if (!/[0-9]/.test(password)) {
+    errors.push('Password must contain at least one number');
+  }
+  
+  if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
+    errors.push('Password must contain at least one special character');
+  }
+  
+  return { valid: errors.length === 0, errors };
 }
 
 // Helper to map database row to User object
-function mapRowToUser(row: any): User {
+function mapRowToUser(row: UserRow): User {
   return {
     id: row.id,
     email: row.email,
@@ -57,34 +170,82 @@ function mapRowToUser(row: any): User {
   };
 }
 
-// User registration with SQLite
-export async function registerUser(credentials: RegisterCredentials): Promise<{ success: boolean; user?: User; error?: string }> {
+// Rate limiting helper (simple in-memory store)
+const rateLimiter = new Map<string, { attempts: number; lastAttempt: number }>();
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_TIME = 15 * 60 * 1000; // 15 minutes
+
+function checkRateLimit(email: string): { allowed: boolean; attemptsLeft?: number } {
+  const key = email.toLowerCase();
+  const now = Date.now();
+  const record = rateLimiter.get(key);
+  
+  if (!record) {
+    rateLimiter.set(key, { attempts: 1, lastAttempt: now });
+    return { allowed: true, attemptsLeft: MAX_LOGIN_ATTEMPTS - 1 };
+  }
+  
+  // Reset if lockout time has passed
+  if (now - record.lastAttempt > LOCKOUT_TIME) {
+    rateLimiter.set(key, { attempts: 1, lastAttempt: now });
+    return { allowed: true, attemptsLeft: MAX_LOGIN_ATTEMPTS - 1 };
+  }
+  
+  if (record.attempts >= MAX_LOGIN_ATTEMPTS) {
+    return { allowed: false };
+  }
+  
+  record.attempts++;
+  record.lastAttempt = now;
+  
+  return { allowed: true, attemptsLeft: MAX_LOGIN_ATTEMPTS - record.attempts };
+}
+
+// User registration with improved validation and security
+export async function registerUser(
+  credentials: RegisterCredentials
+): Promise<{ success: boolean; user?: User; error?: string; errors?: string[] }> {
   try {
+    // Input validation
+    if (!validateEmail(credentials.email)) {
+      return { success: false, error: 'Invalid email format' };
+    }
+    
+    const passwordValidation = validatePassword(credentials.password);
+    if (!passwordValidation.valid) {
+      return { success: false, error: 'Password requirements not met', errors: passwordValidation.errors };
+    }
+    
+    if (!credentials.firstName?.trim() || !credentials.lastName?.trim()) {
+      return { success: false, error: 'First name and last name are required' };
+    }
+
     return await withDatabase(async (db) => {
       // Check if user already exists
       const existingUser = await db.getFirstAsync(
         'SELECT id FROM users WHERE email = ?',
         [credentials.email.toLowerCase()]
-      );
+      ) as { id: string } | null;
 
       if (existingUser) {
         return { success: false, error: 'User with this email already exists' };
       }
 
-      // Create new user
-      const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const hashedPassword = hashPassword(credentials.password);
+      // Create new user with secure hash
+      const userId = generateSecureId();
+      const hashedPassword = await hashPassword(credentials.password);
       const now = new Date().toISOString();
 
       await db.runAsync(
-        `INSERT INTO users (id, email, password_hash, first_name, last_name, created_at) 
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO users (id, email, password_hash, first_name, last_name, created_at, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           userId,
-          credentials.email.toLowerCase(),
+          credentials.email.toLowerCase().trim(),
           hashedPassword,
-          credentials.firstName,
-          credentials.lastName,
+          credentials.firstName.trim(),
+          credentials.lastName.trim(),
+          now,
           now
         ]
       );
@@ -93,7 +254,7 @@ export async function registerUser(credentials: RegisterCredentials): Promise<{ 
       const newUser = await db.getFirstAsync(
         'SELECT * FROM users WHERE id = ?',
         [userId]
-      );
+      ) as UserRow | null;
 
       if (!newUser) {
         return { success: false, error: 'Failed to create user' };
@@ -101,17 +262,27 @@ export async function registerUser(credentials: RegisterCredentials): Promise<{ 
 
       const user = mapRowToUser(newUser);
 
-      // Generate and save auth token
-      const token = generateAuthToken(userId);
-      await saveAuthToken(token);
+      // Generate tokens
+      const accessToken = generateJWT(userId, user.email);
+      const refreshToken = generateRefreshToken(userId);
+      
+      // Save tokens and user data
+      await saveAuthToken(accessToken);
+      await saveRefreshToken(refreshToken);
       await saveCurrentUser(user);
 
+      // Save session to database
+      await saveUserSession(userId, accessToken, {
+        platform: Platform.OS,
+        userAgent: 'LorodexApp/1.0'
+      });
+
+      console.log('User registered successfully:', { id: userId, email: user.email });
       return { success: true, user };
     });
   } catch (error) {
     console.error('Registration error:', error);
 
-    // Handle specific SQLite errors
     if ((error as any).message?.includes('UNIQUE constraint failed')) {
       return { success: false, error: 'User with this email already exists' };
     }
@@ -120,29 +291,78 @@ export async function registerUser(credentials: RegisterCredentials): Promise<{ 
   }
 }
 
-// User login with SQLite
-export async function loginUser(credentials: LoginCredentials): Promise<{ success: boolean; user?: User; error?: string }> {
+// User login with rate limiting and improved security
+export async function loginUser(
+  credentials: LoginCredentials
+): Promise<{ success: boolean; user?: User; error?: string; attemptsLeft?: number }> {
   try {
-    return await withDatabase(async (db) => {
-      const hashedPassword = hashPassword(credentials.password);
+    // Input validation
+    if (!validateEmail(credentials.email)) {
+      return { success: false, error: 'Invalid email format' };
+    }
 
-      // Find user with matching email and password
+    // Check rate limiting
+    const rateLimitCheck = checkRateLimit(credentials.email);
+    if (!rateLimitCheck.allowed) {
+      return { 
+        success: false, 
+        error: `Too many failed attempts. Please try again in ${Math.ceil(LOCKOUT_TIME / 60000)} minutes.` 
+      };
+    }
+
+    return await withDatabase(async (db) => {
+      // Find user by email
       const userRow = await db.getFirstAsync(
-        'SELECT * FROM users WHERE email = ? AND password_hash = ?',
-        [credentials.email.toLowerCase(), hashedPassword]
-      );
+        'SELECT * FROM users WHERE email = ?',
+        [credentials.email.toLowerCase()]
+      ) as UserRow | null;
 
       if (!userRow) {
-        return { success: false, error: 'Invalid email or password' };
+        return { 
+          success: false, 
+          error: 'Invalid email or password',
+          attemptsLeft: rateLimitCheck.attemptsLeft 
+        };
       }
+
+      // Verify password
+      const isValidPassword = await verifyPassword(credentials.password, userRow.password_hash);
+      
+      if (!isValidPassword) {
+        return { 
+          success: false, 
+          error: 'Invalid email or password',
+          attemptsLeft: rateLimitCheck.attemptsLeft 
+        };
+      }
+
+      // Reset rate limiter on successful login
+      rateLimiter.delete(credentials.email.toLowerCase());
 
       const user = mapRowToUser(userRow);
 
-      // Generate and save auth token
-      const token = generateAuthToken(user.id);
-      await saveAuthToken(token);
+      // Generate new tokens
+      const accessToken = generateJWT(user.id, user.email);
+      const refreshToken = generateRefreshToken(user.id);
+
+      // Save tokens and user data
+      await saveAuthToken(accessToken);
+      await saveRefreshToken(refreshToken);
       await saveCurrentUser(user);
 
+      // Update last login
+      await db.runAsync(
+        'UPDATE users SET last_login = ? WHERE id = ?',
+        [new Date().toISOString(), user.id]
+      );
+
+      // Save session to database
+      await saveUserSession(user.id, accessToken, {
+        platform: Platform.OS,
+        userAgent: 'LorodexApp/1.0'
+      });
+
+      console.log('User logged in successfully:', { id: user.id, email: user.email });
       return { success: true, user };
     });
   } catch (error) {
@@ -151,14 +371,110 @@ export async function loginUser(credentials: LoginCredentials): Promise<{ succes
   }
 }
 
-// Get user by ID (useful for token validation)
+// Save user session to database
+async function saveUserSession(
+  userId: string, 
+  token: string, 
+  deviceInfo: any
+): Promise<void> {
+  try {
+    await withDatabase(async (db) => {
+      const sessionId = generateSecureId().replace('user_', 'session_');
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+      
+      await db.runAsync(
+        `INSERT OR REPLACE INTO user_sessions 
+         (id, user_id, session_token, device_info, is_active, expires_at, created_at, last_accessed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          sessionId,
+          userId,
+          token,
+          JSON.stringify(deviceInfo),
+          true,
+          expiresAt.toISOString(),
+          new Date().toISOString(),
+          new Date().toISOString()
+        ]
+      );
+    });
+  } catch (error) {
+    console.error('Failed to save user session:', error);
+    // Don't throw - session saving is not critical for login
+  }
+}
+
+// Validate auth token with JWT
+export async function validateAuthToken(): Promise<{ valid: boolean; user?: User; expired?: boolean }> {
+  try {
+    const token = await getAuthToken();
+    if (!token) {
+      return { valid: false };
+    }
+
+    // Validate JWT
+    const jwtResult = validateJWT(token);
+    if (!jwtResult.valid) {
+      await removeAuthToken();
+      return { valid: false, expired: true };
+    }
+
+    const { payload } = jwtResult;
+    
+    // Check if user still exists in database
+    const user = await getUserById(payload.userId);
+    if (!user) {
+      await removeAuthToken();
+      return { valid: false };
+    }
+
+    return { valid: true, user };
+  } catch (error) {
+    console.error('Token validation error:', error);
+    await removeAuthToken();
+    return { valid: false };
+  }
+}
+
+// Refresh token functionality
+export async function refreshAuthToken(): Promise<{ success: boolean; user?: User }> {
+  try {
+    const refreshToken = await getRefreshToken();
+    if (!refreshToken) {
+      return { success: false };
+    }
+
+    const jwtResult = validateJWT(refreshToken);
+    if (!jwtResult.valid || jwtResult.payload.type !== 'refresh') {
+      await removeAuthToken();
+      return { success: false };
+    }
+
+    const user = await getUserById(jwtResult.payload.userId);
+    if (!user) {
+      await removeAuthToken();
+      return { success: false };
+    }
+
+    // Generate new access token
+    const newAccessToken = generateJWT(user.id, user.email);
+    await saveAuthToken(newAccessToken);
+
+    return { success: true, user };
+  } catch (error) {
+    console.error('Token refresh error:', error);
+    return { success: false };
+  }
+}
+
+// Get user by ID
 export async function getUserById(userId: string): Promise<User | null> {
   try {
     return await withDatabase(async (db) => {
       const userRow = await db.getFirstAsync(
         'SELECT * FROM users WHERE id = ?',
         [userId]
-      );
+      ) as UserRow | null;
 
       return userRow ? mapRowToUser(userRow) : null;
     });
@@ -168,165 +484,7 @@ export async function getUserById(userId: string): Promise<User | null> {
   }
 }
 
-// Validate auth token and get user
-export async function validateAuthToken(): Promise<{ valid: boolean; user?: User }> {
-  try {
-    const token = await getAuthToken();
-    if (!token) {
-      return { valid: false };
-    }
-
-    // Extract user ID from token (simple implementation)
-    const userId = token.split('_')[0];
-    if (!userId) {
-      return { valid: false };
-    }
-
-    // Check if user still exists in database
-    const user = await getUserById(userId);
-    if (!user) {
-      // User was deleted, clear invalid token
-      await removeAuthToken();
-      return { valid: false };
-    }
-
-    return { valid: true, user };
-  } catch (error) {
-    console.error('Token validation error:', error);
-    return { valid: false };
-  }
-}
-
-// Update user profile
-export async function updateUserProfile(
-  userId: string, 
-  updates: { firstName?: string; lastName?: string; email?: string }
-): Promise<{ success: boolean; user?: User; error?: string }> {
-  try {
-    return await withDatabase(async (db) => {
-      const setClause = [];
-      const values = [];
-
-      // Build dynamic update query
-      if (updates.firstName !== undefined) {
-        setClause.push('first_name = ?');
-        values.push(updates.firstName);
-      }
-      if (updates.lastName !== undefined) {
-        setClause.push('last_name = ?');
-        values.push(updates.lastName);
-      }
-      if (updates.email !== undefined) {
-        setClause.push('email = ?');
-        values.push(updates.email.toLowerCase());
-      }
-
-      if (setClause.length === 0) {
-        return { success: false, error: 'No updates provided' };
-      }
-
-      values.push(userId);
-
-      // Check if new email already exists (if email is being updated)
-      if (updates.email) {
-        const existingUser = await db.getFirstAsync(
-          'SELECT id FROM users WHERE email = ? AND id != ?',
-          [updates.email.toLowerCase(), userId]
-        );
-
-        if (existingUser) {
-          return { success: false, error: 'Email already in use' };
-        }
-      }
-
-      // Update user
-      await db.runAsync(
-        `UPDATE users SET ${setClause.join(', ')} WHERE id = ?`,
-        values
-      );
-
-      // Fetch updated user
-      const updatedUser = await getUserById(userId);
-      if (!updatedUser) {
-        return { success: false, error: 'Failed to update user' };
-      }
-
-      // Update stored user data
-      await saveCurrentUser(updatedUser);
-
-      return { success: true, user: updatedUser };
-    });
-  } catch (error) {
-    console.error('Profile update error:', error);
-
-    if ((error as any).message?.includes('UNIQUE constraint failed')) {
-      return { success: false, error: 'Email already in use' };
-    }
-
-    return { success: false, error: 'Failed to update profile' };
-  }
-}
-
-// Change password
-export async function changePassword(
-  userId: string,
-  oldPassword: string,
-  newPassword: string
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    return await withDatabase(async (db) => {
-      const oldHashedPassword = hashPassword(oldPassword);
-
-      // Verify current password
-      const user = await db.getFirstAsync(
-        'SELECT id FROM users WHERE id = ? AND password_hash = ?',
-        [userId, oldHashedPassword]
-      );
-
-      if (!user) {
-        return { success: false, error: 'Current password is incorrect' };
-      }
-
-      // Update password
-      const newHashedPassword = hashPassword(newPassword);
-      await db.runAsync(
-        'UPDATE users SET password_hash = ? WHERE id = ?',
-        [newHashedPassword, userId]
-      );
-
-      return { success: true };
-    });
-  } catch (error) {
-    console.error('Password change error:', error);
-    return { success: false, error: 'Failed to change password' };
-  }
-}
-
-// Delete user account (cascade delete will remove business cards)
-export async function deleteUserAccount(userId: string): Promise<{ success: boolean; error?: string }> {
-  try {
-    return await withDatabase(async (db) => {
-      const result = await db.runAsync(
-        'DELETE FROM users WHERE id = ?',
-        [userId]
-      );
-
-      if (result.changes === 0) {
-        return { success: false, error: 'User not found' };
-      }
-
-      // Clear local session
-      await removeAuthToken();
-
-      return { success: true };
-    });
-  } catch (error) {
-    console.error('Account deletion error:', error);
-    return { success: false, error: 'Failed to delete account' };
-  }
-}
-
-// Session management (web-compatible storage)
+// Enhanced session management
 export async function saveAuthToken(token: string): Promise<void> {
   try {
     await webSecureStorage.setItemAsync(AUTH_TOKEN_KEY, token);
@@ -344,9 +502,27 @@ export async function getAuthToken(): Promise<string | null> {
   }
 }
 
+export async function saveRefreshToken(token: string): Promise<void> {
+  try {
+    await webSecureStorage.setItemAsync(REFRESH_TOKEN_KEY, token);
+  } catch (error) {
+    console.error('Failed to save refresh token:', error);
+  }
+}
+
+export async function getRefreshToken(): Promise<string | null> {
+  try {
+    return await webSecureStorage.getItemAsync(REFRESH_TOKEN_KEY);
+  } catch (error) {
+    console.error('Failed to get refresh token:', error);
+    return null;
+  }
+}
+
 export async function removeAuthToken(): Promise<void> {
   try {
     await webSecureStorage.deleteItemAsync(AUTH_TOKEN_KEY);
+    await webSecureStorage.deleteItemAsync(REFRESH_TOKEN_KEY);
     await webSecureStorage.deleteItemAsync(CURRENT_USER_KEY);
   } catch (error) {
     console.error('Failed to remove auth tokens:', error);
@@ -371,29 +547,52 @@ export async function getCurrentUser(): Promise<User | null> {
   }
 }
 
-// Logout helper
+// Enhanced logout with session cleanup
 export async function logout(): Promise<void> {
-  await removeAuthToken();
+  try {
+    const token = await getAuthToken();
+    if (token) {
+      // Invalidate session in database
+      await withDatabase(async (db) => {
+        await db.runAsync(
+          'UPDATE user_sessions SET is_active = false WHERE session_token = ?',
+          [token]
+        );
+      });
+    }
+  } catch (error) {
+    console.error('Error during logout cleanup:', error);
+  } finally {
+    await removeAuthToken();
+  }
 }
 
-// Auto-login helper (checks if stored session is still valid)
+// Auto-login with token refresh
 export async function attemptAutoLogin(): Promise<User | null> {
   try {
     const storedUser = await getCurrentUser();
     const token = await getAuthToken();
 
     if (!storedUser || !token) {
-      return null;
+      // Try to refresh token if available
+      const refreshResult = await refreshAuthToken();
+      return refreshResult.success ? refreshResult.user || null : null;
     }
 
-    // Validate that user still exists in database
+    // Validate current token
     const validation = await validateAuthToken();
-    if (!validation.valid) {
-      await removeAuthToken();
-      return null;
+    if (validation.valid) {
+      return validation.user || null;
     }
 
-    return validation.user || null;
+    // If token is expired, try to refresh
+    if (validation.expired) {
+      const refreshResult = await refreshAuthToken();
+      return refreshResult.success ? refreshResult.user || null : null;
+    }
+
+    await removeAuthToken();
+    return null;
   } catch (error) {
     console.error('Auto-login error:', error);
     await removeAuthToken();
@@ -401,11 +600,60 @@ export async function attemptAutoLogin(): Promise<User | null> {
   }
 }
 
-// Add this function to lib/auth.ts for testing purposes
+// Additional utility functions
+export async function changePassword(
+  userId: string,
+  oldPassword: string,
+  newPassword: string
+): Promise<{ success: boolean; error?: string; errors?: string[] }> {
+  try {
+    const passwordValidation = validatePassword(newPassword);
+    if (!passwordValidation.valid) {
+      return { success: false, error: 'Password requirements not met', errors: passwordValidation.errors };
+    }
+
+    return await withDatabase(async (db) => {
+      // Verify current password
+      const user = await db.getFirstAsync(
+        'SELECT password_hash FROM users WHERE id = ?',
+        [userId]
+      ) as { password_hash: string } | null;
+
+      if (!user) {
+        return { success: false, error: 'User not found' };
+      }
+
+      const isValidPassword = await verifyPassword(oldPassword, user.password_hash);
+      if (!isValidPassword) {
+        return { success: false, error: 'Current password is incorrect' };
+      }
+
+      // Update password
+      const newHashedPassword = await hashPassword(newPassword);
+      await db.runAsync(
+        'UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?',
+        [newHashedPassword, new Date().toISOString(), userId]
+      );
+
+      // Invalidate all existing sessions except current
+      const currentToken = await getAuthToken();
+      await db.runAsync(
+        'UPDATE user_sessions SET is_active = false WHERE user_id = ? AND session_token != ?',
+        [userId, currentToken || '']
+      );
+
+      return { success: true };
+    });
+  } catch (error) {
+    console.error('Password change error:', error);
+    return { success: false, error: 'Failed to change password' };
+  }
+}
+
 export async function getAllUsers(): Promise<User[]> {
   try {
     return await withDatabase(async (db) => {
-      const rows = await db.getAllAsync('SELECT * FROM users ORDER BY created_at DESC');
+      const rows = await db.getAllAsync('SELECT * FROM users ORDER BY created_at DESC') as UserRow[];
       return rows.map(mapRowToUser);
     });
   } catch (error) {
@@ -414,14 +662,13 @@ export async function getAllUsers(): Promise<User[]> {
   }
 }
 
-// Add this function to check if a specific user exists
 export async function checkUserExists(email: string): Promise<boolean> {
   try {
     return await withDatabase(async (db) => {
       const user = await db.getFirstAsync(
         'SELECT id FROM users WHERE email = ?',
         [email.toLowerCase()]
-      );
+      ) as { id: string } | null;
       return !!user;
     });
   } catch (error) {

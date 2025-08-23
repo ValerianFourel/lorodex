@@ -17,27 +17,29 @@ export default function CardsScreen() {
     loadCards();
   }, []);
 
-  const loadCards = async () => {
-    if (!user) return;
+const loadCards = async () => {
+  if (!user) return;
 
-    try {
-      setIsLoading(true);
-      const userCards = await BusinessCardService.getByUserId(user.id);
-      setCards(userCards);
-    } catch (error) {
-      console.error('Error loading cards:', error);
-      Alert.alert('Error', 'Failed to load business cards');
-    } finally {
-      setIsLoading(false);
+  try {
+    setIsLoading(true);
+    const response = await BusinessCardService.getByUserId(user.id);
+    
+    // Extract the cards array from the response object
+    if (response.success && response.cards) {
+      setCards(response.cards);
+    } else {
+      console.error('Error loading cards:', response.error);
+      Alert.alert('Error', response.error || 'Failed to load business cards');
+      setCards([]); // Set empty array on error
     }
-  };
-
-  const handleEdit = (card: BusinessCard) => {
-    router.push({
-      pathname: '/(tabs)/create-card',
-      params: { cardId: card.id }
-    });
-  };
+  } catch (error) {
+    console.error('Error loading cards:', error);
+    Alert.alert('Error', 'Failed to load business cards');
+    setCards([]); // Set empty array on error
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   const handleDelete = async (card: BusinessCard) => {
     if (!user) return;
