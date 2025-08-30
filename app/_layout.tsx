@@ -6,14 +6,22 @@ import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/useColorScheme';
 
-export default function RootLayout() {
+// Amplify imports - CORRECTED
+import { Amplify } from 'aws-amplify';
+import { withAuthenticator } from '@aws-amplify/ui-react-native';
+// Fix the import path - should be in root or src folder
+import awsconfig from '../src/aws-exports'; // or './aws-exports' if in same folder
+
+// Configure Amplify
+Amplify.configure(awsconfig);
+
+function RootLayout() {
   const colorScheme = useColorScheme();
   const [loaded] = useFonts({
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
   });
 
   if (!loaded) {
-    // Async font loading only occurs in development.
     return null;
   }
 
@@ -27,3 +35,6 @@ export default function RootLayout() {
     </ThemeProvider>
   );
 }
+
+// Export with Amplify authentication wrapper
+export default withAuthenticator(RootLayout);
